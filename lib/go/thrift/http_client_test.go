@@ -22,6 +22,8 @@ package thrift
 import (
 	"net/http"
 	"testing"
+	"context"
+	"bytes"
 )
 
 func TestHttpClient(t *testing.T) {
@@ -94,6 +96,54 @@ func TestHttpCustomClientPackageScope(t *testing.T) {
 	if !httpTransport.hit {
 		t.Fatalf("Custom client was not used")
 	}
+}
+
+func TestHTTPClientFlushesRequestBufferOnErrors(t *testing.T) {
+	var (
+		write1 = []byte("write 1")
+		write2 = []byte("write 2")
+	)
+
+	l, addr := HttpClientSetupForTest(t)
+	if l != nil {
+		defer l.Close()
+	}
+	trans, err := NewTHttpPostClient("http://" + addr.String())
+	if err != nil {
+		t.Fatalf("Unable to connect to %s: %s", addr.String(), err)
+	}
+
+	_, err = trans.Write(write1)
+	if err != nil {
+		t.Fatalf("Failed to write to transport: %s", err.Error())
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = trans.Flush(ctx)
+	if err == nil {
+		t.Fatalf("Expected flush error")
+	}
+
+	_, err = trans.Write(write2)
+	if err != nil {
+		t.Fatalf("Failed to write to transport: %s", err.Error())
+	}
+	err = trans.Flush(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to flush: %s", err.Error())
+	}
+
+	data := make([]byte, 1024)
+	n, err := trans.Read(data)
+	if err != nil {
+		t.Fatalf("Failed to read: %s", err.Error())
+	}
+
+	data = data[:n]
+	if !bytes.Equal(data, write2) {
+		t.Fatalf("Received unexpected data: %+v", data)
+	}
+	trans.Close()
 }
 
 type customHttpTransport struct {
